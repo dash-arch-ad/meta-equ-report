@@ -9,7 +9,6 @@ from oauth2client.service_account import ServiceAccountCredentials
 META_API_VERSION = "v25.0"
 JST = ZoneInfo("Asia/Tokyo")
 DEFAULT_WORKSHEET_NAME = "gitreport"
-
 AMOUNT_SPENT_MULTIPLIER = 1.25
 
 
@@ -25,14 +24,21 @@ def main():
     since, until = get_target_date_range()
     print(f"Target range: {since} to {until}")
 
-    rows = fetch_meta_cp_pl_rows(
-        act_id=resolved["meta"]["account_id"],
-        token=resolved["meta"]["token"],
-        since=since,
-        until=until,
-    )
+    rows = []
 
-    print(f"Meta rows built: {len(rows)}")
+    for act_id in resolved["meta"]["account_ids"]:
+        if not act_id:
+            continue
+
+        account_rows = fetch_meta_cp_pl_rows(
+            act_id=act_id,
+            token=resolved["meta"]["token"],
+            since=since,
+            until=until,
+        )
+
+        print(f"Meta account {act_id} rows built: {len(account_rows)}")
+        rows.extend(account_rows)
 
     spreadsheet = connect_spreadsheet(
         sheet_id=resolved["sheet"]["spreadsheet_id"],
@@ -71,10 +77,13 @@ def mask_sensitive_values(config):
             candidates.append(value)
 
     meta = config.get("meta", {})
+
     push(meta.get("token"))
-    push(config.get("m_token"))
-    push(meta.get("account_id"))
-    push(config.get("m_act_id"))
+
+    account_ids = meta.get("account_ids", [])
+    if isinstance(account_ids, list):
+        for account_id in account_ids:
+            push(account_id)
 
     for value in sorted(set(candidates)):
         print(f"::add-mask::{value}")
@@ -84,28 +93,22 @@ def resolve_config(config):
     meta_conf = config.get("meta", {})
     sheets_conf = config.get("sheets", {})
 
-    spreadsheet_id = sheets_conf.get("spreadsheet_id")
-    if not spreadsheet_id:
-        legacy_sheet_id = config.get("s_id")
-        if isinstance(legacy_sheet_id, list):
-            spreadsheet_id = legacy_sheet_id[0] if legacy_sheet_id else None
-        else:
-            spreadsheet_id = legacy_sheet_id
+    account_ids = meta_conf.get("account_ids")
 
-    worksheet_name = sheets_conf.get("worksheet_name") or DEFAULT_WORKSHEET_NAME
-
-    google_service_account = config.get("gcp_service_account") or config.get("g_creds")
-    google_service_account = normalize_google_service_account(google_service_account)
+    if isinstance(account_ids, str):
+        account_ids = [account_ids]
 
     return {
         "meta": {
-            "token": meta_conf.get("token") or config.get("m_token"),
-            "account_id": meta_conf.get("account_id") or config.get("m_act_id"),
+            "token": meta_conf.get("token"),
+            "account_ids": account_ids or [],
         },
         "sheet": {
-            "spreadsheet_id": spreadsheet_id,
-            "worksheet_name": worksheet_name,
-            "google_service_account": google_service_account,
+            "spreadsheet_id": sheets_conf.get("spreadsheet_id"),
+            "worksheet_name": sheets_conf.get("worksheet_name") or DEFAULT_WORKSHEET_NAME,
+            "google_service_account": normalize_google_service_account(
+                config.get("gcp_service_account")
+            ),
         },
     }
 
@@ -113,12 +116,13 @@ def resolve_config(config):
 def validate_config(resolved):
     required = {
         "meta.token": resolved["meta"]["token"],
-        "meta.account_id": resolved["meta"]["account_id"],
+        "meta.account_ids": resolved["meta"]["account_ids"],
         "sheet.spreadsheet_id": resolved["sheet"]["spreadsheet_id"],
         "sheet.google_service_account": resolved["sheet"]["google_service_account"],
     }
 
     missing = [k for k, v in required.items() if not v]
+
     if missing:
         raise RuntimeError(f"Missing required config keys: {', '.join(missing)}")
 
@@ -129,8 +133,10 @@ def normalize_google_service_account(creds):
 
     fixed = dict(creds)
     private_key = fixed.get("private_key", "")
+
     if private_key:
         fixed["private_key"] = private_key.replace("\\n", "\n")
+
     return fixed
 
 
@@ -146,14 +152,6 @@ def normalize_meta_act_id(raw_act_id):
 
 
 def get_target_date_range():
-    """
-    GitHub Actionsの起動日時をJSTで見て、
-    当月1日〜前日までを含めた過去6ヶ月分を取得。
-
-    例：
-    2026-04-27に実行
-    → 2025-11-01〜2026-04-26
-    """
     today_jst = datetime.now(JST).date()
     yesterday = today_jst - timedelta(days=1)
 
@@ -203,22 +201,21 @@ def fetch_meta_cp_pl_rows(act_id, token, since, until):
 
         spend = to_float(item.get("spend"))
         adjusted_spend = spend * AMOUNT_SPENT_MULTIPLIER
-
         website_purchases = extract_website_purchases(item.get("actions", []))
 
         rows.append([
-            "meta",                                      # A media
-            "cp_pl",                                     # B scope
-            month,                                       # C month
-            day,                                         # D day
-            item.get("campaign_name", ""),              # E campaign_name
-            item.get("publisher_platform", ""),         # F platform
-            item.get("platform_position", ""),          # G placement
-            item.get("impression_device", ""),          # H device
-            to_int(item.get("impressions")),             # I Impressions
-            to_int(item.get("inline_link_clicks")),      # J Link clicks
-            round(adjusted_spend, 2),                    # K Amount spent ×1.25
-            website_purchases,                           # L Website purchases
+            "meta",
+            "cp_pl",
+            month,
+            day,
+            item.get("campaign_name", ""),
+            item.get("publisher_platform", ""),
+            item.get("platform_position", ""),
+            item.get("impression_device", ""),
+            to_int(item.get("impressions")),
+            to_int(item.get("inline_link_clicks")),
+            round(adjusted_spend, 2),
+            website_purchases,
         ])
 
     return rows
@@ -260,6 +257,7 @@ def fetch_meta_insights(
         except requests.HTTPError as e:
             raise RuntimeError(
                 f"Meta API request failed. "
+                f"account={act_id}, "
                 f"status={response.status_code}, "
                 f"body={truncate_text(response.text)}"
             ) from e
@@ -271,8 +269,7 @@ def fetch_meta_insights(
                 f"Meta API error: {json.dumps(data['error'], ensure_ascii=False)}"
             )
 
-        batch = data.get("data", [])
-        all_rows.extend(batch)
+        all_rows.extend(data.get("data", []))
 
         next_url = data.get("paging", {}).get("next")
         if not next_url:
@@ -285,11 +282,6 @@ def fetch_meta_insights(
 
 
 def extract_website_purchases(actions):
-    """
-    Website purchases想定。
-    主に offsite_conversion.fb_pixel_purchase を優先。
-    念のため purchase も加算対象にしています。
-    """
     if not isinstance(actions, list):
         return 0
 
@@ -298,7 +290,7 @@ def extract_website_purchases(actions):
         "purchase",
     }
 
-    total = 0
+    total = 0.0
 
     for action in actions:
         action_type = action.get("action_type")
@@ -314,14 +306,18 @@ def connect_spreadsheet(sheet_id, google_creds_dict):
             "https://spreadsheets.google.com/feeds",
             "https://www.googleapis.com/auth/drive",
         ]
+
         creds = ServiceAccountCredentials.from_json_keyfile_dict(
             google_creds_dict,
             scope,
         )
+
         client = gspread.authorize(creds)
         spreadsheet = client.open_by_key(sheet_id)
+
         print("Google Sheets connected successfully")
         return spreadsheet
+
     except Exception as e:
         raise RuntimeError(f"Google Sheets connection error: {repr(e)}") from e
 
@@ -353,36 +349,29 @@ def write_to_sheet(spreadsheet, sheet_name, rows):
             )
 
         worksheet.clear()
+
         output = header + rows
         worksheet.update("A1", output, value_input_option="USER_ENTERED")
 
         print(f"Write success: {sheet_name} ({len(rows)} rows)")
+
     except Exception as e:
         raise RuntimeError(f"Write error ({sheet_name}): {repr(e)}") from e
 
 
 def sort_rows(rows):
-    def sort_key(row):
-        media = row[0]
-        scope = row[1]
-        month = row[2]
-        day = row[3]
-        campaign_name = row[4]
-        platform = row[5]
-        placement = row[6]
-        device = row[7]
-
-        return (
-            media,
-            scope,
-            day,
-            campaign_name,
-            platform,
-            placement,
-            device,
-        )
-
-    return sorted(rows, key=sort_key)
+    return sorted(
+        rows,
+        key=lambda row: (
+            row[0],
+            row[1],
+            row[3],
+            row[4],
+            row[5],
+            row[6],
+            row[7],
+        ),
+    )
 
 
 def to_int(value):
