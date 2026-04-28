@@ -13,7 +13,7 @@ AMOUNT_SPENT_MULTIPLIER = 1.25
 
 
 def main():
-    print("=== Start Meta cp_pl Export ===")
+    print("=== Start Meta cp_pl Monthly Export ===")
 
     config = load_secret()
     mask_sensitive_values(config)
@@ -159,13 +159,10 @@ def get_target_date_range():
     yesterday = today_jst - timedelta(days=1)
 
     this_month_start = date(today_jst.year, today_jst.month, 1)
+    last_month_end = this_month_start - timedelta(days=1)
+    last_month_start = date(last_month_end.year, last_month_end.month, 1)
 
-    start_month = this_month_start
-    for _ in range(5):
-        previous_month_end = start_month - timedelta(days=1)
-        start_month = date(previous_month_end.year, previous_month_end.month, 1)
-
-    return start_month, yesterday
+    return last_month_start, yesterday
 
 
 def fetch_meta_cp_pl_rows(act_id, token, since, until):
@@ -193,14 +190,14 @@ def fetch_meta_cp_pl_rows(act_id, token, since, until):
         level="campaign",
         fields=fields,
         breakdowns=breakdowns,
-        time_increment="1",
+        time_increment="monthly",
     )
 
     rows = []
 
     for item in insights:
-        day = item.get("date_start", "")
-        month = day[:7] if day else ""
+        month = item.get("date_start", "")[:7]
+        day = ""
 
         spend = to_float(item.get("spend"))
         adjusted_spend = spend * AMOUNT_SPENT_MULTIPLIER
@@ -376,7 +373,7 @@ def sort_rows(rows):
         key=lambda row: (
             row[0],
             row[1],
-            row[3],
+            row[2],
             row[4],
             row[5],
             row[6],
