@@ -30,15 +30,19 @@ def main():
         if not act_id:
             continue
 
-        account_rows = fetch_meta_cp_pl_rows(
-            act_id=act_id,
-            token=resolved["meta"]["token"],
-            since=since,
-            until=until,
-        )
+        try:
+            account_rows = fetch_meta_cp_pl_rows(
+                act_id=act_id,
+                token=resolved["meta"]["token"],
+                since=since,
+                until=until,
+            )
+            print(f"Meta account {act_id} rows built: {len(account_rows)}")
+            rows.extend(account_rows)
 
-        print(f"Meta account {act_id} rows built: {len(account_rows)}")
-        rows.extend(account_rows)
+        except Exception as e:
+            print(f"Warning: Meta account {act_id} skipped: {repr(e)}")
+            continue
 
     spreadsheet = connect_spreadsheet(
         sheet_id=resolved["sheet"]["spreadsheet_id"],
@@ -77,7 +81,6 @@ def mask_sensitive_values(config):
             candidates.append(value)
 
     meta = config.get("meta", {})
-
     push(meta.get("token"))
 
     account_ids = meta.get("account_ids", [])
@@ -201,6 +204,7 @@ def fetch_meta_cp_pl_rows(act_id, token, since, until):
 
         spend = to_float(item.get("spend"))
         adjusted_spend = spend * AMOUNT_SPENT_MULTIPLIER
+
         website_purchases = extract_website_purchases(item.get("actions", []))
 
         rows.append([
@@ -252,15 +256,13 @@ def fetch_meta_insights(
     while True:
         response = requests.get(url, params=params, timeout=120)
 
-        try:
-            response.raise_for_status()
-        except requests.HTTPError as e:
+        if not response.ok:
             raise RuntimeError(
                 f"Meta API request failed. "
                 f"account={act_id}, "
                 f"status={response.status_code}, "
                 f"body={truncate_text(response.text)}"
-            ) from e
+            )
 
         data = response.json()
 
@@ -287,6 +289,7 @@ def extract_website_purchases(actions):
 
     target_action_types = {
         "offsite_conversion.fb_pixel_purchase",
+        "onsite_conversion.purchase",
         "purchase",
     }
 
@@ -338,19 +341,27 @@ def write_to_sheet(spreadsheet, sheet_name, rows):
         "Website purchases",
     ]]
 
+    output = header + rows
+    required_rows = max(len(output) + 10, 1000)
+    required_cols = 12
+
     try:
         try:
             worksheet = spreadsheet.worksheet(sheet_name)
         except gspread.WorksheetNotFound:
             worksheet = spreadsheet.add_worksheet(
                 title=sheet_name,
-                rows=1000,
-                cols=12,
+                rows=required_rows,
+                cols=required_cols,
             )
 
-        worksheet.clear()
+        if worksheet.row_count < required_rows:
+            worksheet.resize(rows=required_rows)
 
-        output = header + rows
+        if worksheet.col_count < required_cols:
+            worksheet.resize(cols=required_cols)
+
+        worksheet.clear()
         worksheet.update("A1", output, value_input_option="USER_ENTERED")
 
         print(f"Write success: {sheet_name} ({len(rows)} rows)")
