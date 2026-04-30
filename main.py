@@ -11,6 +11,9 @@ JST = ZoneInfo("Asia/Tokyo")
 DEFAULT_WORKSHEET_NAME = "gitreport"
 AMOUNT_SPENT_MULTIPLIER = 1.25
 
+# Website purchasesとして使うaction_type
+PURCHASE_ACTION_TYPE = "offsite_conversion.fb_pixel_purchase"
+
 
 def main():
     print("=== Start Meta Monthly Breakdown Export ===")
@@ -316,20 +319,12 @@ def extract_website_purchases(actions):
     if not isinstance(actions, list):
         return 0
 
-    target_action_types = {
-        "offsite_conversion.fb_pixel_purchase",
-        "onsite_conversion.purchase",
-        "purchase",
-    }
-
-    total = 0.0
-
     for action in actions:
-        action_type = action.get("action_type")
-        if action_type in target_action_types:
-            total += to_float(action.get("value"))
+        if action.get("action_type") == PURCHASE_ACTION_TYPE:
+            value = to_float(action.get("value"))
+            return int(value) if value.is_integer() else value
 
-    return int(total) if total.is_integer() else total
+    return 0
 
 
 def connect_spreadsheet(sheet_id, google_creds_dict):
