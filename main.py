@@ -13,7 +13,7 @@ AMOUNT_SPENT_MULTIPLIER = 1.25
 
 
 def main():
-    print("=== Start Meta cp_pl Monthly Export ===")
+    print("=== Start Meta Monthly Breakdown Export ===")
 
     config = load_secret()
     mask_sensitive_values(config)
@@ -31,7 +31,7 @@ def main():
             continue
 
         try:
-            account_rows = fetch_meta_cp_pl_rows(
+            account_rows = fetch_meta_rows(
                 act_id=act_id,
                 token=resolved["meta"]["token"],
                 since=since,
@@ -165,7 +165,44 @@ def get_target_date_range():
     return last_month_start, yesterday
 
 
-def fetch_meta_cp_pl_rows(act_id, token, since, until):
+def fetch_meta_rows(act_id, token, since, until):
+    rows = []
+
+    rows.extend(fetch_meta_breakdown_rows(
+        act_id=act_id,
+        token=token,
+        since=since,
+        until=until,
+        scope="pf",
+        breakdowns=["publisher_platform"],
+    ))
+
+    rows.extend(fetch_meta_breakdown_rows(
+        act_id=act_id,
+        token=token,
+        since=since,
+        until=until,
+        scope="imp_device",
+        breakdowns=["impression_device"],
+    ))
+
+    rows.extend(fetch_meta_breakdown_rows(
+        act_id=act_id,
+        token=token,
+        since=since,
+        until=until,
+        scope="cp_pl",
+        breakdowns=[
+            "publisher_platform",
+            "platform_position",
+            "device_platform",
+        ],
+    ))
+
+    return rows
+
+
+def fetch_meta_breakdown_rows(act_id, token, since, until, scope, breakdowns):
     normalized_act_id = normalize_meta_act_id(act_id)
 
     fields = [
@@ -174,12 +211,6 @@ def fetch_meta_cp_pl_rows(act_id, token, since, until):
         "inline_link_clicks",
         "spend",
         "actions",
-    ]
-
-    breakdowns = [
-        "publisher_platform",
-        "platform_position",
-        "impression_device",
     ]
 
     insights = fetch_meta_insights(
@@ -201,17 +232,17 @@ def fetch_meta_cp_pl_rows(act_id, token, since, until):
 
         spend = to_float(item.get("spend"))
         adjusted_spend = spend * AMOUNT_SPENT_MULTIPLIER
-
         website_purchases = extract_website_purchases(item.get("actions", []))
 
         rows.append([
             "meta",
-            "cp_pl",
+            scope,
             month,
             day,
             item.get("campaign_name", ""),
             item.get("publisher_platform", ""),
             item.get("platform_position", ""),
+            item.get("device_platform", ""),
             item.get("impression_device", ""),
             to_int(item.get("impressions")),
             to_int(item.get("inline_link_clicks")),
@@ -257,6 +288,7 @@ def fetch_meta_insights(
             raise RuntimeError(
                 f"Meta API request failed. "
                 f"account={act_id}, "
+                f"breakdowns={breakdowns}, "
                 f"status={response.status_code}, "
                 f"body={truncate_text(response.text)}"
             )
@@ -331,7 +363,8 @@ def write_to_sheet(spreadsheet, sheet_name, rows):
         "campaign_name",
         "platform",
         "placement",
-        "device",
+        "device_platform",
+        "impression_device",
         "Impressions",
         "Link clicks",
         "Amount spent",
@@ -340,7 +373,7 @@ def write_to_sheet(spreadsheet, sheet_name, rows):
 
     output = header + rows
     required_rows = max(len(output) + 10, 1000)
-    required_cols = 12
+    required_cols = 13
 
     try:
         try:
@@ -378,6 +411,7 @@ def sort_rows(rows):
             row[5],
             row[6],
             row[7],
+            row[8],
         ),
     )
 
